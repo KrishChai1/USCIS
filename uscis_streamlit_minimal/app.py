@@ -1,0 +1,576 @@
+"""
+USCIS Torch API Testing Console
+Interactive Streamlit app for testing USCIS APIs with your actual credentials
+
+Run with: streamlit run app.py
+"""
+
+import streamlit as st
+import json
+import time
+from datetime import datetime
+from typing import Optional
+import sys
+import os
+
+# Add services to path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from services.uscis_client import (
+    USCISApiClient, 
+    USCISEnvironment, 
+    USCISApiError,
+    CaseStatus,
+    FOIARequest
+)
+
+# Page config
+st.set_page_config(
+    page_title="USCIS API Testing Console",
+    page_icon="🏛️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1a365d;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-size: 1rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    .api-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        color: white;
+        margin-bottom: 1rem;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .error-box {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .info-box {
+        background-color: #cce5ff;
+        border: 1px solid #99caff;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .code-block {
+        background-color: #1e1e1e;
+        color: #d4d4d4;
+        padding: 1rem;
+        border-radius: 5px;
+        font-family: 'Courier New', monospace;
+        font-size: 0.85rem;
+        overflow-x: auto;
+    }
+    .metric-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        text-align: center;
+    }
+    .token-timer {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #28a745;
+    }
+    .token-expired {
+        color: #dc3545;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# Initialize session state
+if 'client' not in st.session_state:
+    st.session_state.client = None
+if 'api_logs' not in st.session_state:
+    st.session_state.api_logs = []
+if 'credentials_saved' not in st.session_state:
+    st.session_state.credentials_saved = False
+
+# Load credentials from Streamlit secrets if available
+def get_secret(key: str, default: str = "") -> str:
+    """Get secret from Streamlit secrets or return default"""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+# Pre-load credentials from secrets
+DEFAULT_CLIENT_ID = get_secret("USCIS_CLIENT_ID", "")
+DEFAULT_CLIENT_SECRET = get_secret("USCIS_CLIENT_SECRET", "")
+DEFAULT_ENVIRONMENT = get_secret("USCIS_ENVIRONMENT", "sandbox")
+CLAUDE_API_KEY = get_secret("CLAUDE_API_KEY", "")
+
+
+def add_log(action: str, status: str, details: dict = None):
+    """Add entry to API log"""
+    st.session_state.api_logs.insert(0, {
+        "timestamp": datetime.now().isoformat(),
+        "action": action,
+        "status": status,
+        "details": details or {}
+    })
+    # Keep last 50 logs
+    st.session_state.api_logs = st.session_state.api_logs[:50]
+
+
+def format_curl(method: str, url: str, headers: dict = None, data: dict = None) -> str:
+    """Format a curl command for documentation"""
+    cmd = f"curl -X {method}"
+    if headers:
+        for k, v in headers.items():
+            if k.lower() == "authorization":
+                v = "Bearer YOUR_ACCESS_TOKEN"
+            cmd += f' \\\n  -H "{k}: {v}"'
+    if data:
+        cmd += f' \\\n  -d \'{json.dumps(data)}\''
+    cmd += f' \\\n  {url}'
+    return cmd
+
+
+# ==================== SIDEBAR ====================
+
+with st.sidebar:
+    st.markdown("### 🔐 API Credentials")
+    
+    st.info("""
+    **Get your credentials:**
+    1. Go to [developer.uscis.gov](https://developer.uscis.gov)
+    2. Sign up / Log in
+    3. Create a Developer Team
+    4. Create an App → Get Client ID & Secret
+    """)
+    
+    # Environment selection
+    env_options = ["Sandbox", "Production"]
+    default_env_index = 1 if DEFAULT_ENVIRONMENT.lower() == "production" else 0
+    environment = st.selectbox(
+        "Environment",
+        options=env_options,
+        index=default_env_index,
+        help="Sandbox for testing, Production requires demo approval"
+    )
+    
+    env = USCISEnvironment.SANDBOX if environment == "Sandbox" else USCISEnvironment.PRODUCTION
+    
+    # Show if secrets are configured
+    if DEFAULT_CLIENT_ID and DEFAULT_CLIENT_SECRET:
+        st.success("✅ Credentials loaded from secrets")
+    
+    # Credentials input (pre-filled from secrets if available)
+    client_id = st.text_input(
+        "Client ID",
+        value=DEFAULT_CLIENT_ID,
+        type="default",
+        help="Your OAuth Client ID from Developer Portal"
+    )
+    
+    client_secret = st.text_input(
+        "Client Secret",
+        value=DEFAULT_CLIENT_SECRET,
+        type="password",
+        help="Your OAuth Client Secret (keep secure!)"
+    )
+    
+    # Connect button
+    if st.button("🔗 Connect to USCIS API", use_container_width=True):
+        if not client_id or not client_secret:
+            st.error("Please enter both Client ID and Client Secret")
+        else:
+            with st.spinner("Authenticating..."):
+                try:
+                    client = USCISApiClient(client_id, client_secret, env)
+                    client.authenticate()
+                    st.session_state.client = client
+                    st.session_state.credentials_saved = True
+                    add_log("Authentication", "SUCCESS", client.get_token_info())
+                    st.success("✅ Connected successfully!")
+                    st.rerun()
+                except USCISApiError as e:
+                    add_log("Authentication", "FAILED", {"error": str(e)})
+                    st.error(f"❌ Authentication failed: {e}")
+    
+    # Connection status
+    st.markdown("---")
+    st.markdown("### 📊 Connection Status")
+    
+    if st.session_state.client:
+        token_info = st.session_state.client.get_token_info()
+        if token_info.get("authenticated"):
+            seconds_remaining = token_info.get("seconds_remaining", 0)
+            
+            if seconds_remaining > 0:
+                st.success("🟢 Connected")
+                st.metric("Token Expires In", f"{seconds_remaining}s")
+                
+                # Auto-refresh warning
+                if seconds_remaining < 300:
+                    st.warning("⚠️ Token expiring soon!")
+            else:
+                st.error("🔴 Token Expired")
+                if st.button("🔄 Refresh Token"):
+                    st.session_state.client.authenticate()
+                    st.rerun()
+            
+            st.caption(f"Environment: {token_info.get('environment', 'unknown')}")
+        else:
+            st.warning("🟡 Not authenticated")
+    else:
+        st.info("🔵 Not connected")
+    
+    # Quick links
+    st.markdown("---")
+    st.markdown("### 📚 Documentation")
+    st.markdown("""
+    - [USCIS Developer Portal](https://developer.uscis.gov)
+    - [API Catalog](https://developer.uscis.gov/apis)
+    - [OAuth Guide](https://developer.uscis.gov/article/how-get-access-tokens-client-credentials)
+    - [Sandbox Testing](https://developer.uscis.gov/get-started/sandbox)
+    """)
+
+
+# ==================== MAIN CONTENT ====================
+
+st.markdown('<p class="main-header">🏛️ USCIS Torch API Testing Console</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Test the official USCIS APIs with your developer credentials</p>', unsafe_allow_html=True)
+
+# Tabs for different APIs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📋 Case Status API", 
+    "📝 FOIA API", 
+    "🧪 Connection Test",
+    "📜 API Logs"
+])
+
+
+# ==================== TAB 1: CASE STATUS API ====================
+
+with tab1:
+    st.markdown("## Case Status API")
+    st.markdown("""
+    Check the status of immigration cases using receipt numbers.
+    
+    **Endpoint:** `GET /case-status/{receipt_number}`
+    
+    **Rate Limit:** 10 TPS (Sandbox)
+    """)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("### Query Case Status")
+        
+        # Receipt number input
+        receipt_input = st.text_input(
+            "Receipt Number",
+            placeholder="e.g., EAC9999103402",
+            help="Enter a valid USCIS receipt number"
+        )
+        
+        # Sandbox test receipts
+        if environment == "Sandbox":
+            st.caption("**Sandbox Test Receipt Numbers:**")
+            test_cols = st.columns(3)
+            for i, receipt in enumerate(USCISApiClient.SANDBOX_TEST_RECEIPTS):
+                with test_cols[i % 3]:
+                    if st.button(receipt, key=f"test_{receipt}"):
+                        receipt_input = receipt
+                        st.session_state.test_receipt = receipt
+        
+        # Use session state for receipt if clicked
+        if 'test_receipt' in st.session_state:
+            receipt_input = st.session_state.test_receipt
+            del st.session_state.test_receipt
+        
+        # Query button
+        if st.button("🔍 Check Status", type="primary", disabled=not st.session_state.client):
+            if not receipt_input:
+                st.error("Please enter a receipt number")
+            else:
+                with st.spinner("Querying USCIS..."):
+                    try:
+                        start_time = time.time()
+                        status = st.session_state.client.get_case_status(receipt_input)
+                        elapsed = time.time() - start_time
+                        
+                        add_log(
+                            f"Case Status: {receipt_input}",
+                            "SUCCESS",
+                            {"form_type": status.form_type, "status": status.status_text_en}
+                        )
+                        
+                        # Display results
+                        st.success(f"✅ Query successful ({elapsed:.2f}s)")
+                        
+                        st.markdown("#### Case Information")
+                        
+                        info_col1, info_col2 = st.columns(2)
+                        with info_col1:
+                            st.metric("Receipt Number", status.receipt_number)
+                            st.metric("Form Type", status.form_type)
+                        with info_col2:
+                            st.metric("Submitted", status.submitted_date or "N/A")
+                            st.metric("Last Modified", status.modified_date or "N/A")
+                        
+                        st.markdown("#### Status")
+                        st.info(f"**{status.status_text_en}**")
+                        st.markdown(status.status_desc_en)
+                        
+                        # Spanish translation
+                        with st.expander("🇪🇸 Spanish Translation"):
+                            st.markdown(f"**{status.status_text_es}**")
+                            st.markdown(status.status_desc_es)
+                        
+                        # Raw response
+                        with st.expander("📦 Raw API Response"):
+                            st.json(status.raw_response)
+                        
+                    except USCISApiError as e:
+                        add_log(f"Case Status: {receipt_input}", "FAILED", {"error": str(e)})
+                        st.error(f"❌ API Error: {e}")
+                        if e.trace_id:
+                            st.caption(f"Trace ID: {e.trace_id}")
+    
+    with col2:
+        st.markdown("### cURL Example")
+        
+        base_url = "https://api-int.uscis.gov" if environment == "Sandbox" else "https://api.uscis.gov"
+        curl_cmd = f'''curl -X GET \\
+  -H "Authorization: Bearer YOUR_TOKEN" \\
+  "{base_url}/case-status/{receipt_input or 'RECEIPT_NUMBER'}"'''
+        
+        st.code(curl_cmd, language="bash")
+        
+        st.markdown("### Response Format")
+        st.code('''{
+  "case_status": {
+    "receiptNumber": "EAC9999103402",
+    "formType": "I-130",
+    "submittedDate": "09-05-2023",
+    "modifiedDate": "09-05-2023",
+    "current_case_status_text_en": "...",
+    "current_case_status_desc_en": "...",
+    "hist_case_status": null
+  },
+  "message": "Query was successful"
+}''', language="json")
+
+
+# ==================== TAB 2: FOIA API ====================
+
+with tab2:
+    st.markdown("## FOIA Request and Status API")
+    st.markdown("""
+    Create and track Freedom of Information Act (FOIA) requests for Alien File material.
+    
+    **Endpoints:**
+    - `POST /foia/request` - Create new FOIA request
+    - `GET /foia/status/{request_number}` - Check request status
+    
+    **Rate Limit:** 5 TPS (Sandbox)
+    """)
+    
+    foia_tab1, foia_tab2 = st.tabs(["Create Request", "Check Status"])
+    
+    with foia_tab1:
+        st.markdown("### Create FOIA Request")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            subject_first = st.text_input("Subject First Name *")
+            subject_last = st.text_input("Subject Last Name *")
+            subject_dob = st.text_input("Date of Birth *", placeholder="MM-DD-YYYY")
+            subject_country = st.text_input("Country of Birth *")
+        
+        with col2:
+            a_number = st.text_input("A-Number (optional)", placeholder="A123456789")
+            requester_email = st.text_input("Requester Email (optional)")
+            request_type = st.selectbox("Request Type", ["ALIEN_FILE", "OTHER"])
+        
+        if st.button("📤 Submit FOIA Request", type="primary", disabled=not st.session_state.client):
+            if not all([subject_first, subject_last, subject_dob, subject_country]):
+                st.error("Please fill in all required fields (*)")
+            else:
+                with st.spinner("Submitting FOIA request..."):
+                    try:
+                        result = st.session_state.client.create_foia_request(
+                            subject_first_name=subject_first,
+                            subject_last_name=subject_last,
+                            subject_dob=subject_dob,
+                            subject_country_of_birth=subject_country,
+                            a_number=a_number if a_number else None,
+                            requester_email=requester_email if requester_email else None,
+                            request_type=request_type
+                        )
+                        
+                        add_log("FOIA Request Created", "SUCCESS", {"request_number": result.request_number})
+                        
+                        st.success("✅ FOIA Request Submitted!")
+                        st.metric("Request Number", result.request_number)
+                        
+                        with st.expander("📦 Raw Response"):
+                            st.json(result.raw_response)
+                            
+                    except USCISApiError as e:
+                        add_log("FOIA Request", "FAILED", {"error": str(e)})
+                        st.error(f"❌ API Error: {e}")
+    
+    with foia_tab2:
+        st.markdown("### Check FOIA Status")
+        
+        request_number = st.text_input("FOIA Request Number", placeholder="Enter request number")
+        
+        if st.button("🔍 Check FOIA Status", disabled=not st.session_state.client):
+            if not request_number:
+                st.error("Please enter a request number")
+            else:
+                with st.spinner("Checking status..."):
+                    try:
+                        result = st.session_state.client.get_foia_status(request_number)
+                        
+                        add_log(f"FOIA Status: {request_number}", "SUCCESS", {"status": result.status})
+                        
+                        st.success("✅ Status Retrieved")
+                        st.metric("Status", result.status)
+                        
+                        with st.expander("📦 Raw Response"):
+                            st.json(result.raw_response)
+                            
+                    except USCISApiError as e:
+                        add_log(f"FOIA Status: {request_number}", "FAILED", {"error": str(e)})
+                        st.error(f"❌ API Error: {e}")
+
+
+# ==================== TAB 3: CONNECTION TEST ====================
+
+with tab3:
+    st.markdown("## Connection Test")
+    st.markdown("Test your API connection and verify credentials are working correctly.")
+    
+    if st.button("🧪 Run Connection Test", type="primary"):
+        if not st.session_state.client:
+            st.error("Please connect to the API first (enter credentials in sidebar)")
+        else:
+            with st.spinner("Running tests..."):
+                results = st.session_state.client.test_connection()
+                
+                add_log("Connection Test", "COMPLETE", results)
+                
+                # Display results
+                st.markdown("### Test Results")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("#### Environment")
+                    st.info(results.get("environment", "unknown").upper())
+                
+                with col2:
+                    st.markdown("#### Authentication")
+                    auth = results.get("authentication", {})
+                    if auth.get("success"):
+                        st.success("✅ PASSED")
+                    else:
+                        st.error("❌ FAILED")
+                        st.caption(auth.get("error", "Unknown error"))
+                
+                with col3:
+                    st.markdown("#### Case Status API")
+                    case_api = results.get("case_status_api", {})
+                    if case_api.get("success"):
+                        st.success("✅ PASSED")
+                        st.caption(f"Test receipt: {case_api.get('test_receipt')}")
+                    else:
+                        st.error("❌ FAILED")
+                        st.caption(case_api.get("error", "Unknown error"))
+                
+                # Token details
+                st.markdown("### Token Details")
+                token_info = results.get("authentication", {}).get("token_info", {})
+                if token_info:
+                    st.json(token_info)
+                
+                # Full results
+                with st.expander("📦 Full Test Results"):
+                    st.json(results)
+    
+    # API endpoints reference
+    st.markdown("---")
+    st.markdown("### API Endpoints Reference")
+    
+    endpoints_df = {
+        "API": ["OAuth Token", "Case Status", "FOIA Create", "FOIA Status"],
+        "Method": ["POST", "GET", "POST", "GET"],
+        "Sandbox URL": [
+            "https://api-int.uscis.gov/oauth/accesstoken",
+            "https://api-int.uscis.gov/case-status/{receipt}",
+            "https://api-int.uscis.gov/foia/request",
+            "https://api-int.uscis.gov/foia/status/{request_number}"
+        ],
+        "Production URL": [
+            "https://api.uscis.gov/oauth/accesstoken",
+            "https://api.uscis.gov/case-status/{receipt}",
+            "https://api.uscis.gov/foia/request",
+            "https://api.uscis.gov/foia/status/{request_number}"
+        ]
+    }
+    st.dataframe(endpoints_df, use_container_width=True)
+
+
+# ==================== TAB 4: API LOGS ====================
+
+with tab4:
+    st.markdown("## API Request Logs")
+    st.markdown("View history of API calls made during this session.")
+    
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("🗑️ Clear Logs"):
+            st.session_state.api_logs = []
+            st.rerun()
+    
+    if not st.session_state.api_logs:
+        st.info("No API calls logged yet. Make some requests to see them here.")
+    else:
+        for i, log in enumerate(st.session_state.api_logs):
+            status_icon = "✅" if log["status"] == "SUCCESS" else "❌" if log["status"] == "FAILED" else "ℹ️"
+            
+            with st.expander(f"{status_icon} {log['action']} - {log['timestamp'][:19]}"):
+                st.markdown(f"**Status:** {log['status']}")
+                if log.get("details"):
+                    st.json(log["details"])
+
+
+# ==================== FOOTER ====================
+
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; font-size: 0.8rem;">
+    <p>USCIS Torch API Testing Console | Based on <a href="https://developer.uscis.gov">official USCIS documentation</a></p>
+    <p>For support, contact: <a href="mailto:uscis-torch-api@uscis.dhs.gov">uscis-torch-api@uscis.dhs.gov</a></p>
+</div>
+""", unsafe_allow_html=True)
