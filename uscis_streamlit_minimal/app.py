@@ -257,8 +257,8 @@ with tab1:
             help="Enter a valid USCIS receipt number"
         )
         
-        # Sandbox test receipts
-        if environment == "Sandbox":
+        # Sandbox test receipts - show if using sandbox environment
+        if DEFAULT_ENVIRONMENT.lower() == "sandbox":
             st.caption("**Sandbox Test Receipt Numbers:**")
             test_cols = st.columns(3)
             for i, receipt in enumerate(USCISApiClient.SANDBOX_TEST_RECEIPTS):
@@ -324,7 +324,7 @@ with tab1:
     with col2:
         st.markdown("### cURL Example")
         
-        base_url = "https://api-int.uscis.gov" if environment == "Sandbox" else "https://api.uscis.gov"
+        base_url = "https://api-int.uscis.gov" if DEFAULT_ENVIRONMENT.lower() == "sandbox" else "https://api.uscis.gov"
         curl_cmd = f'''curl -X GET \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   "{base_url}/case-status/{receipt_input or 'RECEIPT_NUMBER'}"'''
