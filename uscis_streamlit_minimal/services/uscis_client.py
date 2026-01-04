@@ -226,6 +226,8 @@ class USCISApiClient:
         
         url = f"{self.base_url}{endpoint}"
         
+        logger.info(f"Making {method} request to: {url}")
+        
         try:
             response = self._session.request(
                 method=method,
@@ -235,15 +237,36 @@ class USCISApiClient:
                 timeout=30
             )
             
+            logger.info(f"Response status: {response.status_code}")
+            
             # Handle errors
             if response.status_code >= 400:
-                error_data = response.json() if response.text else {}
+                # Try to parse error response
+                error_body = response.text
+                error_data = {}
+                try:
+                    error_data = response.json() if response.text else {}
+                except:
+                    pass
+                
                 errors = error_data.get("errors", [{}])
                 first_error = errors[0] if errors else {}
                 
+                # Build detailed error message
+                error_msg = first_error.get("message", "")
+                if not error_msg:
+                    if response.status_code == 503:
+                        error_msg = f"USCIS API unavailable (503). URL: {url}. Response: {error_body[:200] if error_body else 'empty'}"
+                    elif response.status_code == 401:
+                        error_msg = "Authentication failed - check your credentials"
+                    elif response.status_code == 404:
+                        error_msg = f"Endpoint not found: {url}"
+                    else:
+                        error_msg = f"API error {response.status_code}: {error_body[:200] if error_body else 'no response body'}"
+                
                 raise USCISApiError(
-                    message=first_error.get("message", f"API error: {response.status_code}"),
-                    code=first_error.get("code", "UNKNOWN_ERROR"),
+                    message=error_msg,
+                    code=first_error.get("code", f"HTTP_{response.status_code}"),
                     status=response.status_code,
                     trace_id=first_error.get("traceId")
                 )
@@ -461,6 +484,20 @@ class USCISApiClient:
                 }
         
         return results
+    
+    def get_debug_info(self) -> Dict[str, Any]:
+        """Get debug information about API configuration"""
+        return {
+            "environment": self.environment.value,
+            "base_url": self.base_url,
+            "oauth_url": self.oauth_url,
+            "case_status_endpoint": f"{self.base_url}/case-status/{{receipt_number}}",
+            "foia_request_endpoint": f"{self.base_url}/foia/request",
+            "foia_status_endpoint": f"{self.base_url}/foia/status/{{request_number}}",
+            "is_authenticated": self.is_authenticated,
+            "token_info": self.get_token_info() if self.token_info else None,
+            "sandbox_test_receipts": self.SANDBOX_TEST_RECEIPTS
+        }
 
 
 # Convenience function
