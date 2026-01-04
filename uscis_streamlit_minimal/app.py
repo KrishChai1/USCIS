@@ -471,6 +471,12 @@ with tab3:
     st.markdown("## Connection Test")
     st.markdown("Test your API connection and verify credentials are working correctly.")
     
+    # Show debug info if connected
+    if st.session_state.client:
+        with st.expander("🔧 Debug Info (API Endpoints)", expanded=True):
+            debug_info = st.session_state.client.get_debug_info()
+            st.json(debug_info)
+    
     if st.button("🧪 Run Connection Test", type="primary"):
         if not st.session_state.client:
             st.error("Please connect to the API first (enter credentials in sidebar)")
