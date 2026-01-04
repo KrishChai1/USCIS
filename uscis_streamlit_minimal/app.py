@@ -154,102 +154,69 @@ def format_curl(method: str, url: str, headers: dict = None, data: dict = None) 
 # ==================== SIDEBAR ====================
 
 with st.sidebar:
-    st.markdown("### 🔐 API Credentials")
+    st.markdown("### 🔐 Connection Status")
     
-    st.info("""
-    **Get your credentials:**
-    1. Go to [developer.uscis.gov](https://developer.uscis.gov)
-    2. Sign up / Log in
-    3. Create a Developer Team
-    4. Create an App → Get Client ID & Secret
-    """)
+    # Auto-connect from secrets on startup
+    if not st.session_state.client and DEFAULT_CLIENT_ID and DEFAULT_CLIENT_SECRET:
+        try:
+            env = USCISEnvironment.PRODUCTION if DEFAULT_ENVIRONMENT.lower() == "production" else USCISEnvironment.SANDBOX
+            client = USCISApiClient(DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET, env)
+            client.authenticate()
+            st.session_state.client = client
+            st.session_state.credentials_saved = True
+            add_log("Auto-Authentication", "SUCCESS", {"environment": env.value})
+        except USCISApiError as e:
+            add_log("Auto-Authentication", "FAILED", {"error": str(e)})
     
-    # Environment selection
-    env_options = ["Sandbox", "Production"]
-    default_env_index = 1 if DEFAULT_ENVIRONMENT.lower() == "production" else 0
-    environment = st.selectbox(
-        "Environment",
-        options=env_options,
-        index=default_env_index,
-        help="Sandbox for testing, Production requires demo approval"
-    )
-    
-    env = USCISEnvironment.SANDBOX if environment == "Sandbox" else USCISEnvironment.PRODUCTION
-    
-    # Show if secrets are configured
-    if DEFAULT_CLIENT_ID and DEFAULT_CLIENT_SECRET:
-        st.success("✅ Credentials loaded from secrets")
-    
-    # Credentials input (pre-filled from secrets if available)
-    client_id = st.text_input(
-        "Client ID",
-        value=DEFAULT_CLIENT_ID,
-        type="default",
-        help="Your OAuth Client ID from Developer Portal"
-    )
-    
-    client_secret = st.text_input(
-        "Client Secret",
-        value=DEFAULT_CLIENT_SECRET,
-        type="password",
-        help="Your OAuth Client Secret (keep secure!)"
-    )
-    
-    # Connect button
-    if st.button("🔗 Connect to USCIS API", use_container_width=True):
-        if not client_id or not client_secret:
-            st.error("Please enter both Client ID and Client Secret")
-        else:
-            with st.spinner("Authenticating..."):
-                try:
-                    client = USCISApiClient(client_id, client_secret, env)
-                    client.authenticate()
-                    st.session_state.client = client
-                    st.session_state.credentials_saved = True
-                    add_log("Authentication", "SUCCESS", client.get_token_info())
-                    st.success("✅ Connected successfully!")
-                    st.rerun()
-                except USCISApiError as e:
-                    add_log("Authentication", "FAILED", {"error": str(e)})
-                    st.error(f"❌ Authentication failed: {e}")
-    
-    # Connection status
-    st.markdown("---")
-    st.markdown("### 📊 Connection Status")
-    
+    # Show connection status
     if st.session_state.client:
         token_info = st.session_state.client.get_token_info()
         if token_info.get("authenticated"):
             seconds_remaining = token_info.get("seconds_remaining", 0)
             
             if seconds_remaining > 0:
-                st.success("🟢 Connected")
+                st.success("🟢 Connected to USCIS API")
                 st.metric("Token Expires In", f"{seconds_remaining}s")
+                st.caption(f"Environment: **{token_info.get('environment', 'unknown').upper()}**")
                 
                 # Auto-refresh warning
                 if seconds_remaining < 300:
                     st.warning("⚠️ Token expiring soon!")
+                    if st.button("🔄 Refresh Token"):
+                        try:
+                            st.session_state.client.authenticate()
+                            st.rerun()
+                        except USCISApiError as e:
+                            st.error(f"Refresh failed: {e}")
             else:
                 st.error("🔴 Token Expired")
-                if st.button("🔄 Refresh Token"):
-                    st.session_state.client.authenticate()
-                    st.rerun()
-            
-            st.caption(f"Environment: {token_info.get('environment', 'unknown')}")
+                if st.button("🔄 Reconnect"):
+                    try:
+                        st.session_state.client.authenticate()
+                        st.rerun()
+                    except USCISApiError as e:
+                        st.error(f"Reconnect failed: {e}")
         else:
             st.warning("🟡 Not authenticated")
     else:
-        st.info("🔵 Not connected")
+        if DEFAULT_CLIENT_ID and DEFAULT_CLIENT_SECRET:
+            st.error("🔴 Connection failed - check secrets")
+        else:
+            st.warning("🟡 Credentials not configured")
+            st.info("Add USCIS_CLIENT_ID and USCIS_CLIENT_SECRET to Streamlit secrets")
     
     # Quick links
     st.markdown("---")
-    st.markdown("### 📚 Documentation")
+    st.markdown("### 📚 Resources")
     st.markdown("""
     - [USCIS Developer Portal](https://developer.uscis.gov)
-    - [API Catalog](https://developer.uscis.gov/apis)
-    - [OAuth Guide](https://developer.uscis.gov/article/how-get-access-tokens-client-credentials)
-    - [Sandbox Testing](https://developer.uscis.gov/get-started/sandbox)
+    - [API Documentation](https://developer.uscis.gov/apis)
     """)
+    
+    # Sandbox hours notice
+    st.markdown("---")
+    st.markdown("### ⏰ Sandbox Hours")
+    st.info("**Mon-Fri:** 7AM - 8PM EST\n\nSandbox unavailable on weekends")
 
 
 # ==================== MAIN CONTENT ====================
@@ -469,22 +436,30 @@ with tab2:
 
 with tab3:
     st.markdown("## Connection Test")
-    st.markdown("Test your API connection and verify credentials are working correctly.")
+    st.markdown("Test your API connection and verify the service is working correctly.")
     
-    # Show debug info if connected
+    # Show API info (no credentials)
     if st.session_state.client:
-        with st.expander("🔧 Debug Info (API Endpoints)", expanded=True):
-            debug_info = st.session_state.client.get_debug_info()
-            st.json(debug_info)
+        st.markdown("### 🌐 API Configuration")
+        col1, col2 = st.columns(2)
+        with col1:
+            env = st.session_state.client.environment.value.upper()
+            st.info(f"**Environment:** {env}")
+        with col2:
+            base_url = st.session_state.client.base_url
+            st.info(f"**Base URL:** {base_url}")
     
     if st.button("🧪 Run Connection Test", type="primary"):
         if not st.session_state.client:
-            st.error("Please connect to the API first (enter credentials in sidebar)")
+            st.error("Not connected to USCIS API. Check your secrets configuration.")
         else:
             with st.spinner("Running tests..."):
                 results = st.session_state.client.test_connection()
                 
-                add_log("Connection Test", "COMPLETE", results)
+                add_log("Connection Test", "COMPLETE", {
+                    "auth_success": results.get("authentication", {}).get("success"),
+                    "api_success": results.get("case_status_api", {}).get("success")
+                })
                 
                 # Display results
                 st.markdown("### Test Results")
@@ -509,20 +484,15 @@ with tab3:
                     case_api = results.get("case_status_api", {})
                     if case_api.get("success"):
                         st.success("✅ PASSED")
-                        st.caption(f"Test receipt: {case_api.get('test_receipt')}")
+                        st.caption(f"Test: {case_api.get('test_receipt')}")
                     else:
                         st.error("❌ FAILED")
-                        st.caption(case_api.get("error", "Unknown error"))
-                
-                # Token details
-                st.markdown("### Token Details")
-                token_info = results.get("authentication", {}).get("token_info", {})
-                if token_info:
-                    st.json(token_info)
-                
-                # Full results
-                with st.expander("📦 Full Test Results"):
-                    st.json(results)
+                        error_msg = case_api.get("error", "Unknown error")
+                        # Check for sandbox hours issue
+                        if "unavailable" in error_msg.lower() or "503" in error_msg:
+                            st.caption("⏰ Sandbox may be outside operating hours (Mon-Fri 7AM-8PM EST)")
+                        else:
+                            st.caption(error_msg[:100])
     
     # API endpoints reference
     st.markdown("---")
@@ -544,7 +514,7 @@ with tab3:
             "https://api.uscis.gov/foia/status/{request_number}"
         ]
     }
-    st.dataframe(endpoints_df, use_container_width=True)
+    st.dataframe(endpoints_df, width="stretch")
 
 
 # ==================== TAB 4: API LOGS ====================
