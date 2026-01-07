@@ -179,6 +179,18 @@ with st.sidebar:
                 st.metric("Token Expires In", f"{seconds_remaining}s")
                 st.caption(f"Environment: **{token_info.get('environment', 'unknown').upper()}**")
                 
+                # Show enabled APIs
+                api_products = token_info.get("api_products", [])
+                if api_products:
+                    st.markdown("**Enabled APIs:**")
+                    for api in api_products:
+                        st.caption(f"✅ {api}")
+                    
+                    # Check for missing FOIA API
+                    has_foia = any("foia" in api.lower() for api in api_products)
+                    if not has_foia:
+                        st.warning("⚠️ FOIA API not enabled")
+                
                 # Auto-refresh warning
                 if seconds_remaining < 300:
                     st.warning("⚠️ Token expiring soon!")
@@ -360,76 +372,96 @@ with tab2:
     **Rate Limit:** 5 TPS (Sandbox)
     """)
     
-    foia_tab1, foia_tab2 = st.tabs(["Create Request", "Check Status"])
+    # Check if FOIA API is enabled
+    foia_enabled = False
+    if st.session_state.client:
+        token_info = st.session_state.client.get_token_info()
+        api_products = token_info.get("api_products", [])
+        foia_enabled = any("foia" in api.lower() for api in api_products)
     
-    with foia_tab1:
-        st.markdown("### Create FOIA Request")
+    if not foia_enabled:
+        st.error("""
+        ⚠️ **FOIA API Not Enabled**
         
-        col1, col2 = st.columns(2)
+        Your app doesn't have access to the FOIA API. To enable it:
         
-        with col1:
-            subject_first = st.text_input("Subject First Name *")
-            subject_last = st.text_input("Subject Last Name *")
-            subject_dob = st.text_input("Date of Birth *", placeholder="MM-DD-YYYY")
-            subject_country = st.text_input("Country of Birth *")
+        1. Go to [developer.uscis.gov](https://developer.uscis.gov)
+        2. Navigate to **Teams** → **Team Apps**
+        3. Click on your app name
+        4. Click **Edit** and add **"FOIA Request and Status API - Sandbox"**
+        5. Save and reconnect
+        """)
+    else:
+        foia_tab1, foia_tab2 = st.tabs(["Create Request", "Check Status"])
         
-        with col2:
-            a_number = st.text_input("A-Number (optional)", placeholder="A123456789")
-            requester_email = st.text_input("Requester Email (optional)")
-            request_type = st.selectbox("Request Type", ["ALIEN_FILE", "OTHER"])
-        
-        if st.button("📤 Submit FOIA Request", type="primary", disabled=not st.session_state.client):
-            if not all([subject_first, subject_last, subject_dob, subject_country]):
-                st.error("Please fill in all required fields (*)")
-            else:
-                with st.spinner("Submitting FOIA request..."):
-                    try:
-                        result = st.session_state.client.create_foia_request(
-                            subject_first_name=subject_first,
-                            subject_last_name=subject_last,
-                            subject_dob=subject_dob,
-                            subject_country_of_birth=subject_country,
-                            a_number=a_number if a_number else None,
-                            requester_email=requester_email if requester_email else None,
-                            request_type=request_type
-                        )
-                        
-                        add_log("FOIA Request Created", "SUCCESS", {"request_number": result.request_number})
-                        
-                        st.success("✅ FOIA Request Submitted!")
-                        st.metric("Request Number", result.request_number)
-                        
-                        with st.expander("📦 Raw Response"):
-                            st.json(result.raw_response)
+        with foia_tab1:
+            st.markdown("### Create FOIA Request")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                subject_first = st.text_input("Subject First Name *")
+                subject_last = st.text_input("Subject Last Name *")
+                subject_dob = st.text_input("Date of Birth *", placeholder="MM-DD-YYYY")
+                subject_country = st.text_input("Country of Birth *")
+            
+            with col2:
+                a_number = st.text_input("A-Number (optional)", placeholder="A123456789")
+                requester_email = st.text_input("Requester Email (optional)")
+                request_type = st.selectbox("Request Type", ["ALIEN_FILE", "OTHER"])
+            
+            if st.button("📤 Submit FOIA Request", type="primary", disabled=not st.session_state.client):
+                if not all([subject_first, subject_last, subject_dob, subject_country]):
+                    st.error("Please fill in all required fields (*)")
+                else:
+                    with st.spinner("Submitting FOIA request..."):
+                        try:
+                            result = st.session_state.client.create_foia_request(
+                                subject_first_name=subject_first,
+                                subject_last_name=subject_last,
+                                subject_dob=subject_dob,
+                                subject_country_of_birth=subject_country,
+                                a_number=a_number if a_number else None,
+                                requester_email=requester_email if requester_email else None,
+                                request_type=request_type
+                            )
                             
-                    except USCISApiError as e:
-                        add_log("FOIA Request", "FAILED", {"error": str(e)})
-                        st.error(f"❌ API Error: {e}")
-    
-    with foia_tab2:
-        st.markdown("### Check FOIA Status")
-        
-        request_number = st.text_input("FOIA Request Number", placeholder="Enter request number")
-        
-        if st.button("🔍 Check FOIA Status", disabled=not st.session_state.client):
-            if not request_number:
-                st.error("Please enter a request number")
-            else:
-                with st.spinner("Checking status..."):
-                    try:
-                        result = st.session_state.client.get_foia_status(request_number)
-                        
-                        add_log(f"FOIA Status: {request_number}", "SUCCESS", {"status": result.status})
-                        
-                        st.success("✅ Status Retrieved")
-                        st.metric("Status", result.status)
-                        
-                        with st.expander("📦 Raw Response"):
-                            st.json(result.raw_response)
+                            add_log("FOIA Request Created", "SUCCESS", {"request_number": result.request_number})
                             
-                    except USCISApiError as e:
-                        add_log(f"FOIA Status: {request_number}", "FAILED", {"error": str(e)})
-                        st.error(f"❌ API Error: {e}")
+                            st.success("✅ FOIA Request Submitted!")
+                            st.metric("Request Number", result.request_number)
+                            
+                            with st.expander("📦 Raw Response"):
+                                st.json(result.raw_response)
+                                
+                        except USCISApiError as e:
+                            add_log("FOIA Request", "FAILED", {"error": str(e)})
+                            st.error(f"❌ API Error: {e}")
+        
+        with foia_tab2:
+            st.markdown("### Check FOIA Status")
+            
+            request_number = st.text_input("FOIA Request Number", placeholder="Enter request number")
+            
+            if st.button("🔍 Check FOIA Status", disabled=not st.session_state.client):
+                if not request_number:
+                    st.error("Please enter a request number")
+                else:
+                    with st.spinner("Checking status..."):
+                        try:
+                            result = st.session_state.client.get_foia_status(request_number)
+                            
+                            add_log(f"FOIA Status: {request_number}", "SUCCESS", {"status": result.status})
+                            
+                            st.success("✅ Status Retrieved")
+                            st.metric("Status", result.status)
+                            
+                            with st.expander("📦 Raw Response"):
+                                st.json(result.raw_response)
+                                
+                        except USCISApiError as e:
+                            add_log(f"FOIA Status: {request_number}", "FAILED", {"error": str(e)})
+                            st.error(f"❌ API Error: {e}")
 
 
 # ==================== TAB 3: CONNECTION TEST ====================
@@ -514,7 +546,7 @@ with tab3:
             "https://api.uscis.gov/foia/status/{request_number}"
         ]
     }
-    st.dataframe(endpoints_df, width="stretch")
+    st.dataframe(endpoints_df, use_container_width=True)
 
 
 # ==================== TAB 4: API LOGS ====================
