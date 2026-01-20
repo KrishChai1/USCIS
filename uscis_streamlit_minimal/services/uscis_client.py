@@ -151,11 +151,6 @@ class USCISApiClient:
         """
         Authenticate using OAuth 2.0 Client Credentials Grant
         
-        From USCIS documentation:
-        curl -X POST -H "Content-Type: application/x-www-form-urlencoded" \
-             -d "grant_type=client_credentials&client_id=xxx&client_secret=xxx" \
-             https://api-int.uscis.gov/oauth/accesstoken
-        
         Returns:
             TokenInfo object with access token details
         """
@@ -252,17 +247,26 @@ class USCISApiClient:
                 errors = error_data.get("errors", [{}])
                 first_error = errors[0] if errors else {}
                 
-                # Build detailed error message
+                # Get error message from API response first
                 error_msg = first_error.get("message", "")
+                
+                # If no message from API, create user-friendly messages
                 if not error_msg:
-                    if response.status_code == 503:
-                        error_msg = f"USCIS API unavailable (503). URL: {url}. Response: {error_body[:200] if error_body else 'empty'}"
-                    elif response.status_code == 401:
-                        error_msg = "Authentication failed - check your credentials"
+                    # Extract receipt/id from endpoint
+                    receipt = endpoint.split("/")[-1] if "/" in endpoint else "unknown"
+                    
+                    if response.status_code == 400:
+                        error_msg = f"Invalid receipt number format: {receipt}"
                     elif response.status_code == 404:
-                        error_msg = f"Endpoint not found: {url}"
+                        error_msg = f"Receipt not found: {receipt}"
+                    elif response.status_code == 401:
+                        error_msg = "Authentication failed - token may be expired"
+                    elif response.status_code == 403:
+                        error_msg = "Access denied - check API permissions"
+                    elif response.status_code == 503:
+                        error_msg = "USCIS API unavailable - try again later (Sandbox hours: Mon-Fri 7AM-8PM EST)"
                     else:
-                        error_msg = f"API error {response.status_code}: {error_body[:200] if error_body else 'no response body'}"
+                        error_msg = f"API error ({response.status_code}): {error_body[:100] if error_body else 'no details'}"
                 
                 raise USCISApiError(
                     message=error_msg,
@@ -284,10 +288,6 @@ class USCISApiClient:
         
         Endpoint: GET /case-status/{receipt_number}
         
-        From USCIS documentation:
-        curl -X GET -H "Authorization: Bearer xxx" \
-             https://api-int.uscis.gov/case-status/EAC9999103402
-        
         Args:
             receipt_number: USCIS receipt number (e.g., EAC9999103402)
         
@@ -295,6 +295,9 @@ class USCISApiClient:
             CaseStatus object with case details
         """
         logger.info(f"Getting case status for: {receipt_number}")
+        
+        # Clean the receipt number
+        receipt_number = receipt_number.strip()
         
         data = self._make_request("GET", f"/case-status/{receipt_number}")
         
