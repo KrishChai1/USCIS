@@ -1,5 +1,5 @@
 """
-USCIS API Services Package
+USCIS API Services
 """
 
 from .uscis_client import (
@@ -13,11 +13,11 @@ from .uscis_client import (
 )
 
 __all__ = [
-    'USCISApiClient',
-    'USCISEnvironment', 
-    'USCISApiError',
-    'CaseStatus',
-    'FOIARequest',
-    'TokenInfo',
-    'create_client'
+    "USCISApiClient",
+    "USCISEnvironment", 
+    "USCISApiError",
+    "CaseStatus",
+    "FOIARequest",
+    "TokenInfo",
+    "create_client"
 ]
