@@ -8,6 +8,8 @@ Available APIs:
 2. FOIA Request and Status API (v1.2.0) - Create and check FOIA requests
 
 Authentication: OAuth 2.0 Client Credentials
+
+DEMO ID: 3401 (Required for production access demo)
 """
 
 import requests
@@ -113,7 +115,8 @@ class USCISApiClient:
         self,
         client_id: str,
         client_secret: str,
-        environment: USCISEnvironment = USCISEnvironment.SANDBOX
+        environment: USCISEnvironment = USCISEnvironment.SANDBOX,
+        demo_id: Optional[str] = None
     ):
         """
         Initialize USCIS API Client
@@ -122,18 +125,30 @@ class USCISApiClient:
             client_id: OAuth Client ID from Developer Portal
             client_secret: OAuth Client Secret from Developer Portal
             environment: SANDBOX or PRODUCTION
+            demo_id: Demo ID provided by USCIS for production access testing
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.environment = environment
+        self.demo_id = demo_id
         self.token_info: Optional[TokenInfo] = None
         
         self._endpoints = self.ENDPOINTS[environment]
         self._session = requests.Session()
-        self._session.headers.update({
+        
+        # Setup default headers
+        default_headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
-        })
+        }
+        
+        # Add demo_id header if provided (required for production access demo)
+        # USCIS Demo ID: 3401
+        if demo_id:
+            default_headers["demo_id"] = demo_id
+            logger.info(f"Demo ID header set: {demo_id}")
+        
+        self._session.headers.update(default_headers)
     
     @property
     def base_url(self) -> str:
@@ -222,6 +237,8 @@ class USCISApiClient:
         url = f"{self.base_url}{endpoint}"
         
         logger.info(f"Making {method} request to: {url}")
+        if self.demo_id:
+            logger.info(f"Using demo_id: {self.demo_id}")
         
         try:
             response = self._session.request(
@@ -435,8 +452,17 @@ class USCISApiClient:
             "is_expired": self.token_info.is_expired,
             "seconds_remaining": max(0, int((self.token_info.expires_at - datetime.now()).total_seconds())),
             "api_products": self.token_info.api_products,
-            "environment": self.environment.value
+            "environment": self.environment.value,
+            "demo_id": self.demo_id
         }
+    
+    def get_request_headers(self) -> Dict[str, str]:
+        """Get current request headers (for debugging/screenshot)"""
+        headers = dict(self._session.headers)
+        # Mask the token for security
+        if "Authorization" in headers:
+            headers["Authorization"] = "Bearer <token>"
+        return headers
     
     def test_connection(self) -> Dict[str, Any]:
         """
@@ -447,6 +473,7 @@ class USCISApiClient:
         """
         results = {
             "environment": self.environment.value,
+            "demo_id": self.demo_id,
             "timestamp": datetime.now().isoformat(),
             "authentication": {"success": False},
             "case_status_api": {"success": False},
@@ -492,12 +519,14 @@ class USCISApiClient:
         """Get debug information about API configuration"""
         return {
             "environment": self.environment.value,
+            "demo_id": self.demo_id,
             "base_url": self.base_url,
             "oauth_url": self.oauth_url,
             "case_status_endpoint": f"{self.base_url}/case-status/{{receipt_number}}",
             "foia_request_endpoint": f"{self.base_url}/foia/request",
             "foia_status_endpoint": f"{self.base_url}/foia/status/{{request_number}}",
             "is_authenticated": self.is_authenticated,
+            "request_headers": self.get_request_headers(),
             "token_info": self.get_token_info() if self.token_info else None,
             "sandbox_test_receipts": self.SANDBOX_TEST_RECEIPTS
         }
@@ -507,7 +536,8 @@ class USCISApiClient:
 def create_client(
     client_id: str,
     client_secret: str,
-    sandbox: bool = True
+    sandbox: bool = True,
+    demo_id: Optional[str] = None
 ) -> USCISApiClient:
     """
     Create a USCIS API client
@@ -516,11 +546,12 @@ def create_client(
         client_id: OAuth Client ID
         client_secret: OAuth Client Secret
         sandbox: Use sandbox environment (default: True)
+        demo_id: Demo ID for production access testing (e.g., "3401")
     
     Returns:
         Authenticated USCISApiClient
     """
     env = USCISEnvironment.SANDBOX if sandbox else USCISEnvironment.PRODUCTION
-    client = USCISApiClient(client_id, client_secret, env)
+    client = USCISApiClient(client_id, client_secret, env, demo_id=demo_id)
     client.authenticate()
     return client
