@@ -384,7 +384,11 @@ client = USCISApiClient(
 
 with tab3:
     st.markdown("## 🚀 Traffic Generator")
+    st.markdown(f"**Demo ID: {DEMO_ID}** - All requests include demo_id header")
     
+    st.markdown("---")
+    
+    # Quick Tests
     col1, col2 = st.columns(2)
     
     with col1:
@@ -411,6 +415,67 @@ with tab3:
                     st.session_state.traffic_stats["total"] += 1
                     st.success(f"✅ {receipt} - {e.status} (expected)")
                 time.sleep(0.5)
+    
+    st.markdown("---")
+    
+    # Bulk Traffic Generator
+    st.markdown("### 📈 Bulk Traffic Generator")
+    st.caption("Generate multiple API requests to meet USCIS traffic requirements")
+    
+    gen_col1, gen_col2, gen_col3 = st.columns(3)
+    
+    with gen_col1:
+        num_success = st.number_input("Number of 200 requests", min_value=1, max_value=50, value=10)
+    with gen_col2:
+        num_errors = st.number_input("Number of 4xx requests", min_value=1, max_value=20, value=5)
+    with gen_col3:
+        delay = st.slider("Delay between requests (sec)", min_value=0.5, max_value=3.0, value=1.0)
+    
+    if st.button("🚀 Generate Bulk Traffic", type="primary", disabled=not st.session_state.client, use_container_width=True):
+        total = num_success + num_errors
+        progress = st.progress(0)
+        status = st.empty()
+        results_200 = 0
+        results_4xx = 0
+        
+        # Success requests
+        valid_receipts = ["EAC9999103402", "WAC9999103402", "LIN9999103402"]
+        for i in range(num_success):
+            receipt = valid_receipts[i % len(valid_receipts)]
+            status.info(f"[{i+1}/{total}] Testing 200: {receipt}")
+            try:
+                st.session_state.client.get_case_status(receipt)
+                st.session_state.traffic_stats["200"] += 1
+                st.session_state.traffic_stats["total"] += 1
+                results_200 += 1
+            except USCISApiError as e:
+                status.warning(f"Request failed: {e}")
+            progress.progress((i + 1) / total)
+            time.sleep(delay)
+        
+        # Error requests
+        error_receipts = ["INVALID", "XXX000", "ABC", "123", "!@#"]
+        for i in range(num_errors):
+            receipt = error_receipts[i % len(error_receipts)]
+            status.info(f"[{num_success + i + 1}/{total}] Testing 4xx: {receipt}")
+            try:
+                st.session_state.client.get_case_status(receipt)
+            except USCISApiError as e:
+                if str(e.status).startswith("4"):
+                    st.session_state.traffic_stats["4xx"] += 1
+                    st.session_state.traffic_stats["total"] += 1
+                    results_4xx += 1
+            progress.progress((num_success + i + 1) / total)
+            time.sleep(delay)
+        
+        status.empty()
+        st.success(f"""
+        ✅ **Bulk Traffic Complete!**
+        - Demo ID: {DEMO_ID}
+        - 200 OK responses: {results_200}
+        - 4xx error responses: {results_4xx}
+        - Total requests: {results_200 + results_4xx}
+        """)
 
 
 # ==================== TAB 4: CONNECTION ====================
